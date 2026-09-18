@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<data-extraction-rules>
+    <cloud-backup>
+        <!-- Exclude nothing; app has no persistent data yet. -->
+    </cloud-backup>
+    <device-transfer>
+        <!-- Same: nothing to transfer. -->
+    </device-transfer>
+</data-extraction-rules>
