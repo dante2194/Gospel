@@ -1,0 +1,213 @@
+package com.example.spotifyweb;
+
+import android.Manifest;
+import android.annotation.SuppressLint;
+import android.app.Activity;
+import android.content.ActivityNotFoundException;
+import android.content.Intent;
+import android.content.pm.PackageManager;
+import android.net.Uri;
+import android.os.Build;
+import android.os.Bundle;
+import android.view.View;
+import android.webkit.CookieManager;
+import android.webkit.WebChromeClient;
+import android.webkit.WebResourceRequest;
+import android.webkit.WebSettings;
+import android.webkit.WebView;
+import android.webkit.WebViewClient;
+import android.widget.Toast;
+
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
+
+public class MainActivity extends Activity {
+    private static final String SPOTIFY_URL = "https://open.spotify.com/";
+    private static final String SPOTIFY_HOST = "open.spotify.com";
+    private static final String USER_AGENT =
+        "Mozilla/5.0 (Linux; Android 16) AppleWebKit/537.36 " +
+        "(KHTML, like Gecko) Chrome/140.0.0.0 Mobile Safari/537.36";
+
+    private WebView webView;
+
+    @SuppressLint("SetJavaScriptEnabled")
+    @Override
+    protected void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        setContentView(R.layout.activity_main);
+
+        webView = findViewById(R.id.webview);
+        WebSettings settings = webView.getSettings();
+        settings.setJavaScriptEnabled(true);
+        settings.setDomStorageEnabled(true);
+        settings.setDatabaseEnabled(true);
+        settings.setMediaPlaybackRequiresUserGesture(false);
+        settings.setSupportMultipleWindows(true);
+        settings.setJavaScriptCanOpenWindowsAutomatically(true);
+        settings.setBuiltInZoomControls(false);
+        settings.setDisplayZoomControls(false);
+        settings.setUserAgentString(USER_AGENT);
+        settings.setMixedContentMode(WebSettings.MIXED_CONTENT_NEVER_ALLOW);
+
+        CookieManager.getInstance().setAcceptCookie(true);
+        CookieManager.getInstance().setAcceptThirdPartyCookies(webView, true);
+
+        webView.setLayerType(View.LAYER_TYPE_HARDWARE, null);
+        webView.setWebViewClient(new SpotifyWebViewClient());
+        webView.setWebChromeClient(new ExternalPopupChromeClient());
+
+        if (savedInstanceState == null) webView.loadUrl(SPOTIFY_URL);
+        else webView.restoreState(savedInstanceState);
+
+        startPlaybackService();
+        requestNotificationPermission();
+    }
+
+    private void startPlaybackService() {
+        Intent serviceIntent = new Intent(this, PlaybackKeepAliveService.class);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(serviceIntent);
+        else startService(serviceIntent);
+    }
+
+    private void requestNotificationPermission() {
+        if (Build.VERSION.SDK_INT >= 33 &&
+            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, 9001);
+        }
+    }
+
+    private void openExternal(String url) {
+        try {
+            Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
+            intent.addCategory(Intent.CATEGORY_BROWSABLE);
+            startActivity(intent);
+        } catch (ActivityNotFoundException ex) {
+            Toast.makeText(this, "No browser found", Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    private boolean isSpotify(String url) {
+        try {
+            return SPOTIFY_HOST.equalsIgnoreCase(Uri.parse(url).getHost());
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private String loadAsset(String name) {
+        try (InputStream in = getAssets().open(name);
+             ByteArrayOutputStream out = new ByteArrayOutputStream()) {
+            byte[] buffer = new byte[8192];
+            int n;
+            while ((n = in.read(buffer)) != -1) out.write(buffer, 0, n);
+            return out.toString(StandardCharsets.UTF_8.name());
+        } catch (IOException e) {
+            return "";
+        }
+    }
+
+    private void injectSpotifyUserscript(WebView view) {
+        String script = loadAsset("userscripts/spotify_declutter.user.js");
+        if (script.isEmpty()) return;
+        String escaped = script
+            .replace("\\", "\\\\")
+            .replace("'", "\\'")
+            .replace("\n", "\\n")
+            .replace("\r", "");
+        view.evaluateJavascript(
+            "javascript:(function(){try{eval('" + escaped + "');}" +
+            "catch(e){console.error(e);}})();", null);
+    }
+
+    private class SpotifyWebViewClient extends WebViewClient {
+        @Override
+        public void onPageFinished(WebView view, String url) {
+            super.onPageFinished(view, url);
+            if (isSpotify(url)) injectSpotifyUserscript(view);
+        }
+
+        @Override
+        public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
+            String url = request.getUrl().toString();
+            if (isSpotify(url)) return false;
+            openExternal(url);
+            return true;
+        }
+
+        @Override
+        public boolean shouldOverrideUrlLoading(WebView view, String url) {
+            if (isSpotify(url)) return false;
+            openExternal(url);
+            return true;
+        }
+    }
+
+    private class ExternalPopupChromeClient extends WebChromeClient {
+        @Override
+        public boolean onCreateWindow(WebView view, boolean isDialog, boolean isUserGesture, android.os.Message resultMsg) {
+            final WebView popup = new WebView(MainActivity.this);
+            WebSettings s = popup.getSettings();
+            s.setJavaScriptEnabled(true);
+            s.setDomStorageEnabled(true);
+            s.setJavaScriptCanOpenWindowsAutomatically(true);
+            s.setSupportMultipleWindows(true);
+            s.setUserAgentString(USER_AGENT);
+
+            popup.setWebViewClient(new WebViewClient() {
+                private boolean opened;
+
+                private boolean openOnce(String url) {
+                    if (!opened && url != null && !url.equals("about:blank")) {
+                        opened = true;
+                        openExternal(url);
+                        popup.destroy();
+                    }
+                    return true;
+                }
+
+                @Override
+                public boolean shouldOverrideUrlLoading(WebView v, WebResourceRequest request) {
+                    return openOnce(request.getUrl().toString());
+                }
+
+                @Override
+                public boolean shouldOverrideUrlLoading(WebView v, String url) {
+                    return openOnce(url);
+                }
+            });
+
+            popup.setWebChromeClient(this);
+            WebView.WebViewTransport transport = (WebView.WebViewTransport) resultMsg.obj;
+            transport.setWebView(popup);
+            resultMsg.sendToTarget();
+            return true;
+        }
+    }
+
+    @Override
+    public void onBackPressed() {
+        if (webView != null && webView.canGoBack()) webView.goBack();
+        else super.onBackPressed();
+    }
+
+    @Override
+    protected void onSaveInstanceState(Bundle outState) {
+        webView.saveState(outState);
+        super.onSaveInstanceState(outState);
+    }
+
+    @Override
+    protected void onDestroy() {
+        if (webView != null) {
+            webView.loadUrl("about:blank");
+            webView.stopLoading();
+            webView.setWebChromeClient(null);
+            webView.setWebViewClient(null);
+            webView.destroy();
+            webView = null;
+        }
+        super.onDestroy();
+    }
+}

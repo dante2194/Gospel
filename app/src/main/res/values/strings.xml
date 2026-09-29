@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">Spotify Web</string>
+    <string name="media_notification_channel">Playback</string>
+    <string name="media_notification_title">Spotify Web playback</string>
+</resources>
